@@ -1,0 +1,500 @@
+---
+title: "BreastCancer_Analysis"
+author: "Hrithik Kumar"
+date: "2023-11-19"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(mlbench)
+library(tidyr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(psych)
+library(caret)
+library(glmnet)
+library(bestglm)
+library(nclSLR)
+library(MASS)
+library(scatterplot3d)
+data("BreastCancer")
+```
+
+# Introduction
+
+In this report, we will discuss the Breast Cancer data set present in the $mlbench$ package. The data set contains `r nrow(BreastCancer)` rows and `r ncol(BreastCancer)` columns. There are a few NA values as well in the data set, for simplicity, we will omit these values. The data set contains information about characteristics of the Breast tissue sample collected using Fine Needle Aspiration Cytology (FNAC). These characteristics, such as uniformity of cell and size of cell, are measured on a scale of 1-10. These variables are stored as factors, we will convert them to numeric variables for our analysis. Finally, we have a column named $Class$ which denotes whether the tissue sample is Benign or Malignant. We aim to create a classifier which can predict whether a tissue sample is benign or malignant. 
+
+```{r, echo=FALSE}
+BreastCancer <- na.omit(BreastCancer)
+
+BreastCancer_df <- as.data.frame(lapply(BreastCancer %>% dplyr::select(-Id), as.numeric))
+# BreastCancer_df <- BreastCancer_df 
+
+#BreastCancer_df <- as.data.frame(sapply(BreastCancer_df, as.numeric))
+#BreastCancer_test <- BreastCancer_df
+
+BreastCancer_df$Class = as.integer(BreastCancer_df$Class - 1)
+head(BreastCancer_df)
+
+```
+
+
+# Exploratory Data Analysis
+
+First, let's start with understanding the data set. After removing the NA values, the data set contains `r nrow(BreastCancer_df)` rows and `r ncol(BreastCancer_df)` columns. To begin our analysis, we will have a look at the mean and variance of the nine variables representing each tissue sample.
+
+```{r, echo=FALSE}
+cat("Number of Benign and Malignant tissue samples. (0: Benign, 1: Malignant)")
+table(BreastCancer_df$Class)
+```
+
+
+
+```{r, echo=FALSE}
+cat("Mean values of Each Variable:")
+colMeans(BreastCancer_df %>% dplyr::select(-Class))
+```
+
+
+
+```{r, echo=FALSE}
+cat("Variance of Each Variable:")
+sapply(BreastCancer_df %>% dplyr::select(-Class), var)
+```
+The Mean and variance do give us a general idea about the distribution of each variable, however, it does not provide us the whole picture. Mean and variance could be heavily influenced by outliers, which could lead to incorrect assumptions about the population based on the sample data. To better understand the distribution of each of these variables, a box and violin plot will be more helpful. 
+
+
+```{r, echo=FALSE, fig.show='hold', out.width="80%", fig.align='center'}
+df_breast_box <- BreastCancer_df %>% dplyr::select(-Class)
+df_breast_box <- gather(df_breast_box, key = "Variable", value = "Value")
+ggplot(df_breast_box, aes(x = Variable, y = Value))+ geom_violin(trim = FALSE,fill = "lightblue")+
+  geom_boxplot(width = 0.2,fill = "white", color = "black", alpha = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The above plot highlights very crucial information about the data set. Firstly, Distribution of "Mitoses" is heavily skewed and consists of many outliers. Similarly, Epithelial cell size, Normal nucleoli and Marginal adhesion have skewed distributions, but they are slightly less skewed and contain less number of outliers compared to Mitoses. The thick bottom end of the violins indicates that majority of these values lie around the median. Cell shape and Cell size have very similar distributions. Both the variables have a minimum value of 1, which is also the median value of the variables. Moreover, the 3rd Quantile of both the variables is also same, which is 5.
+Next, let's have a look at the covariance matrix to get an idea about how these variables are related to each other.
+
+
+```{r, echo=FALSE}
+covar_BreastCancer <- var(BreastCancer_df %>% dplyr::select(-Class))
+covar_BreastCancer
+```
+The Covariance matrix consists of only positive values, indicating a positive relationship among all the variables. Cell size and Bare nuclei show strong correlation, similarly, Marginal adhesion and Cell shape also show strong correlation. These values are quite helpful, however, a heatmap would be more easy to interpret and extract insight from.
+
+
+```{r, echo=FALSE, fig.show='hold', out.width="80%", fig.align='center'}
+heatmap_df_BreastCancer <- BreastCancer_df %>% dplyr::select(-Class)
+cor_matrix <- cor(heatmap_df_BreastCancer)
+melted_cor <- melt(cor_matrix)
+
+#melted_cor
+
+ggplot(data = melted_cor, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  theme_minimal() +
+  labs(title = "Correlation Heatmap") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The above heat map is highlighting some very important relationships among the variables. The most obvious and intuitive result is the strong correlation between Cell size and  Cell shape. Apart from this, we can confirm our previous interpretation of relation between Cell size and Marginal adhesion, and Cell size and Bara nuclei. Epithelial cell size, Bland cromatin and Normal nucleoli seem to have much stronger correlation with Cell size. On the other hand, Mitoses has very weak correlation with all the other variables. Similarly, Clump thickness also does not have very strong relation with any of the other variables, apart from Cell shape. 
+
+These insights point towards the possibility of only some of the variables contributing towards the target variable. We will calculate Generalized variance and Total variance of the data set to further understand the variability in the data.
+
+```{r, echo=FALSE}
+
+cat("Generalised Variance: ",det(covar_BreastCancer))
+cat("\nTotal Variance: ",tr(covar_BreastCancer))
+
+```
+
+We have a large value of Generalized Variance suggesting a significant spread or variability in the data along specific directions. On the other hand, the Total Variance is quite small compared to Generalized variance, indicating that the data is quite concentrated or have less variability when all possible directions are considered. 
+This means that there are strong trends or patterns in the data set that can be captured by a few subset of variables, while other variables contribute quite less to overall variability. We will now build classifiers based on our findings for the Class - benign or malignant.
+
+
+# Data Standardization
+
+Before we implement models on the data set, we will first standardize the data set. We standardize the data set to make sure that variables with larger variances don't dominate the results. Subset selection and Regularization techniques work best on standardized data. After scaling the data, the mean of each variable should be 0, and variance should be 1. Moreover, the Covariance matrix of the scaled data should be equal to the Correlation matrix of the original data.
+
+```{r, echo=FALSE}
+# Scaling the columns to standardize the data set
+BreastCancer_df_scaled <- as.data.frame(scale(BreastCancer_df %>% dplyr::select(-Class))) %>% dplyr::mutate(Class = BreastCancer_df$Class)
+
+# Check scaling is done correctly or not
+
+cat("\n Variance of each Column: \n")
+apply(BreastCancer_df_scaled %>% dplyr::select(-Class), 2, var)
+
+cat("\n Mean of each Column: \n")
+apply(BreastCancer_df_scaled[,-10],2, mean)
+
+cat("\n Comparison of Covariance matrix and Correlation Matrix: \n")
+all.equal(round(var(BreastCancer_df_scaled[,-10]),4), round(cor(BreastCancer_df[,-10]),4))
+
+```
+
+Now that scaling is done perfectly, we can proceed with implementing different classification models and assess them.
+
+
+# Logistic Regression using PCA
+
+Now that the data is scaled, we will implement Logistic regression model using PCA. Since, the generalized variance and total variance indicate that only few variables might contribute towards the majority of the variance in the data set, we will use PCA as a method of subset selection to pick variables that will help us the most in predicting whether a tissue sample is Benign or Malignant.
+
+
+```{r, echo=FALSE}
+# Principal Components Calculation
+
+BreastCancer_pca <- prcomp(BreastCancer_df_scaled[,-10])
+
+summary(BreastCancer_pca)
+```
+
+```{r, echo=FALSE, fig.show='hold', out.width="70%", fig.align='center'}
+# plot scree diagram for easier understanding
+
+plot(BreastCancer_pca, type="l", main="")
+title(xlab="Component number")
+```
+
+
+The above summary and scree diagram of Principal components suggests that 3 principal components account for 80% variance in the data set. This means we can use 3 variables, instead of 9, and still preserve 80% of the variance in the data set. Let's have a closer look at these components to understand the relationship among the variables.
+
+
+```{r, echo=FALSE}
+BreastCancer_pca$rotation[,1:3]
+```
+
+The first principal component accounts for overall correlation among the variables since, all the values are quite close, except Mitoses. The Cell size and Cell shape have the largest values in the first principal component, however, other variables are not too far behind. The second principal component has a significantly large value for Mitoses, suggesting that cells with large Mitoses values are grouped together. Since the value of Mitoses is positive in the second principal component, it suggests an inverse relationship with all other variables in the same direction. The third principal component has large values for Clump thickness and Marginal adhesion, and thus accounting for variation in those 2 variables. Marginal adhesion has a negative value, indicating a direct relationship with the other variables in first two principal components. Clump thickness, on the other hand, has a positive value in the third principal component. This suggests an inverse relationship with other variables and, Clump thickness is significantly important in deciding whether a tumor is benign or malignant.
+
+
+We will now transform our data set to fit on the new axes defined by the principal components selected.
+
+```{r, echo=FALSE}
+
+# Transform the scaled data set to fit on the new axes defined by
+# the principal components selected
+num_components <- 3
+BreastCancer_transformed <- as.data.frame( predict(BreastCancer_pca,
+                                    newdata = BreastCancer_df_scaled[,-10])[, 1:num_components])
+
+BreastCancer_transformed = BreastCancer_transformed %>% dplyr::mutate(Class = BreastCancer_df_scaled$Class)
+
+
+head(BreastCancer_transformed)
+
+
+```
+```{r, echo=FALSE}
+set.seed(1)
+```
+
+Finally, we will fit the logistic regression model on the data set.
+
+```{r}
+log_reg_pca = glm(Class ~ ., data = BreastCancer_transformed,
+                  family = "binomial")
+```
+
+
+```{r, echo=FALSE}
+summary(log_reg_pca)
+
+#head(test_data_transformed)
+```
+
+The coefficients represent the log-odds of the response variable being in a particular category compared to the reference category. All the coefficients have a negative value, suggesting an increase in the predictor variable is associated with a decrease in the log-odds. The first principal component has the largest magnitude of the coefficient, suggesting strong correlation of Cell size, cell shape, marginal adhesion and Bare nuclei with the response variable. The third principal component has the second largest coefficient indicating strong correlation of Clump thickness and Marginal adhesion with the response variable. The $p$-value of first and third principal components are quite small, suggesting that Clump thickness and Marginal adhesion are very likely to be associated with the response variable.
+
+
+
+
+```{r, echo=FALSE, fig.show='hold', out.width="70%", fig.align='center'}
+
+
+colors <- c("#E69F00", "#56B4E9")
+colors <- colors[BreastCancer$Class]
+scatterplot3d(x = BreastCancer_pca$x[,1],
+              y = BreastCancer_pca$x[,2],
+              z = BreastCancer_pca$x[,3],
+              pch=BreastCancer_transformed$Class,
+              color = colors, box = FALSE, grid = TRUE,
+              xlab = "PC1", ylab = "PC2", zlab = "PC3",
+              legend = levels(BreastCancer_transformed$Class))
+```
+
+
+The above scatter plot shows clustering of malignant tissue samples towards right side of the plot. Continuing with our interpretation of the PCs, we see that large values of Mitoses and Clump thickness are grouped together. Data points with overall negative values for principal component 1 are grouped towards the left of the scatter plot.
+
+
+
+# Logistic Regression using best subset selection 
+
+Logistic Regression with PCA showed quite decent results, however, it would be interesting to investigate what variables does best subset selection method choose and, whether we can see patterns similar to PCA. We can perform best subset selection of generalized linear models using **bestglm** package. We will use BIC (Bayesian Information Criterion) to select models with less number of parameters. BIC penalizes models with more parameters, aiming to balance goodness of fit and model complexity. Small values of BIC indicate better models.
+```{r, echo=FALSE}
+
+p = ncol(BreastCancer_df) - 1
+# 
+bss_fit_BIC = bestglm(BreastCancer_df_scaled, family = binomial,
+                      IC = "BIC")
+```
+
+
+```{r, echo=FALSE}
+
+(best_BIC = bss_fit_BIC$Subsets)
+
+```
+
+The model with 5 predictors has the lowest BIC value, thus, we can extract the variables according to the best fitting model and construct a reduced data set. 
+
+
+```{r, echo=FALSE}
+#extracting Predictor variables
+X_bestsubset = BreastCancer_df_scaled[,-10]
+y_bestsubset = BreastCancer_df_scaled[,10]
+
+
+pstar = 5
+
+#Predictors in the best fit model
+cat("\n Predictors in the Best fit Model: \n")
+bss_fit_BIC$Subsets[pstar+1,]
+
+cat("\n Indices of the Best fit Model: \n")
+# get the indices of the predictors in the best fit model
+(indices = as.logical(bss_fit_BIC$Subsets[pstar+1, 2:(p+1)]))
+
+
+#reduce the data set to only include the variables in the best selection subset
+BreastCancer_red = data.frame(X_bestsubset[,indices],y_bestsubset)
+
+
+cat("\n Reduced Data Set: \n")
+head(BreastCancer_red)
+```
+
+
+The reduced data set contains only Clump thickness, Marginal Adhesion, Bare nuclei, Bland cromatin and Normal Nucleoli. Now, we will fit the logistic regression model using the reduced data set. 
+
+```{r}
+logreg_fit = glm(y_bestsubset ~ ., data = BreastCancer_red, family = "binomial")
+
+summary(logreg_fit)
+```
+
+All the 5 coefficients have a positive value, which indicates that an increase in any of these variables is associated with an increase in the log-odds of the cell being malignant. The coefficients have a significant difference in magnitude, with Clump thickness being the largest. All 5 coefficients have a very small $p$-value, however Marginal adhesion has the largest value of $p$ among the other variables, suggesting that it is slightly less likely to be associated with the response variable compared to Clump thickness, Bare nuclei and cell size.
+
+
+
+# Logistic Regression with LASSO penalty
+
+
+The next model that we are going to implement is Logistic Regression with LASSO penalty. LASSO penalty is a form of regularization technique which is used to improve the performance of the model. Regularization methods add a penalty to the loss function, in this case, it is the negative of the log-likelihood function. We will use LASSO method since we know that all the predictor variables don't contribute equally towards the overall variance in the data set and hence, LASSO regularization would perform variable selection and add shrinkage to the coefficients as well.
+
+First, we will try to find the optimal value of lambda, which is the tuning parameter. We will also plot the Misclassification error to understand how the model behaves as the tuning parameter is increased.
+
+```{r, echo=FALSE}
+# Multiple values of lambda
+grid = 10^seq(-4,-1, length.out = 100)
+
+lasso_cv_fit = cv.glmnet(as.matrix(BreastCancer_df_scaled[,-10]), BreastCancer_df_scaled[,10], family = "binomial", alpha = 1, standardize = FALSE, lambda = grid, type.measure = "class")
+```
+
+
+```{r, echo=FALSE, fig.show='hold', out.width="80%", fig.align='center'}
+plot(lasso_cv_fit)
+```
+
+We can see that the error reaches its maximum around value of -1 for Log($\lambda$). Now, we will identify the optimal value for the tuning parameter and obtain the corresponding parameter estimates from the model. 
+
+```{r, echo=FALSE}
+cat("\n Optimal Lambda value: \n")
+(lambda_lasso_min = lasso_cv_fit$lambda.min)
+
+which_lambda_lasso = which(lasso_cv_fit$lambda == lambda_lasso_min)
+## Find the parameter estimates associated with optimal value of the tuning parameter
+coef(lasso_cv_fit, s=lambda_lasso_min)
+```
+
+For the optimal value of lambda, we find that LASSO penalty has reduced the values of coefficients significantly. Clump thickness and Bare nuclei have the largest values of coefficients, meaning they contribute significantly towards prediction of a tissue sample being benign or malignant. Cell size, Epithelial cell size and Mitoses have the lowest coefficient values and won't contribute much towards the prediction. All the coefficients are positive indicating a positive relationship with the target variable. Cell shape and Bland cromatin also have significant coefficient values. These findings are in sync with our previous models using subset selection and PCA.
+
+
+
+# Quadratic Discriminant Analysis
+
+Next, we are going to implement Discriminant Analysis. Discriminant Analysis is a classification technique that aims to find the optimal linear combinations of features that best separate different classes in a data set. To decide whether to use Linear Discriminant Analysis or Quadratic Discriminant Analysis, we will have a look at the covariance matrix of each class.
+
+
+```{r, echo=FALSE}
+class_benign_data = subset(BreastCancer_df, Class == 0)
+class_malignant_data = subset(BreastCancer_df, Class == 1)
+
+
+cov_matrix_benign = cov(class_benign_data[class_benign_data$Class == 0,-10])
+
+cov_matrix_malignant = cov(class_malignant_data[class_malignant_data$Class == 1,-10])
+
+#dim(class_malignant_data)
+
+cat("\n Comparison of Covariance Matrix of Benign and Malignant Class: \n")
+
+all.equal(round(cov_matrix_benign,4),round(cov_matrix_malignant,4))
+```
+LDA makes the assumption that the covariance matrices of each class is equal. Since the covariance matrix of each class is not equal, as displayed above, it would be better to use QDA rather than LDA. Also, since we know from previous subset selection methods that we do not need to include all the variables in the model, we will select the variables we extracted when we performed best subset selection method.
+
+
+```{r, echo=FALSE}
+qda_model = MASS::qda(y_bestsubset ~ ., data = BreastCancer_red)
+
+qda_model
+
+```
+
+The prior probabilities of groups represent the estimated probability of each class occurring before observing any data. Prior Probability of Benign class is 65% and that of Malignant class is 35%. Next most important values are the Group means. Group means represent the estimated mean values of each predictor variable for each class. These values give you a sense of the central tendency of each class with respect to the predictor variables. The Group means of Clump thickness and Marginal adhesion are quite near each other. On the other hand, Bare nuclei has slightly higher values for group means. Normal Nucleoli and Bland cromatin have group means roughly in the same range as Clump thickness and Marginal adhesion.
+
+
+
+# Performance evaluation using Cross Validation
+
+To assess the performance of all the models created so far, we will perform Cross validation. To make the assessment fair, its important that all the models are trained and tested on the same subsets of the original data set. We will calculate the weighted average of the test errors and compare the models based on this value.
+
+
+```{r, echo=FALSE}
+set.seed(1)
+
+nfolds = 10
+n = nrow(BreastCancer_df)
+
+# creating unique fold to be used by each model
+fold_index = sample(nfolds, n, replace = TRUE)
+
+#function to perform cross validation
+log_reg_cv = function(X1, y, fold_ind, model){
+  y = unlist(y)
+  Xy = data.frame(X1, y = y )
+  nfolds = max(fold_ind)
+  if(!all.equal(sort(unique(fold_ind)),1:nfolds)) stop("Invalid fold partition.")
+  cv_errors = numeric(nfolds)
+  for(fold in 1:nfolds){
+    if(model == "log_reg_pca"){
+      tmp_fit = glm(y ~ ., data = Xy[fold_ind!=fold,], family = "binomial")
+    yhat = predict(tmp_fit,Xy[fold_ind == fold,])
+    yhat = ifelse(yhat > 0.5, 1, 0)
+    yhat = factor(yhat, levels= c(0,1))
+    yobs = y[fold_ind == fold]
+    yobs = factor(yobs, levels= c(0,1))
+    conf_matrix = confusionMatrix(yhat,yobs)
+    #yobs = y[fold_ind == fold]
+    cv_errors[fold] = (1-conf_matrix$overall[1])
+    }
+    if(model == "log_reg_bestsubset"){
+      tmp_fit = glm(y ~ ., data = Xy[fold_ind!=fold,], family = "binomial")
+    yhat = predict(tmp_fit,Xy[fold_ind == fold,])
+    yhat = ifelse(yhat > 0.5, 1, 0)
+    yhat = factor(yhat, levels= c(0,1))
+    yobs = y[fold_ind == fold]
+    yobs = factor(yobs, levels= c(0,1))
+    conf_matrix = confusionMatrix(yhat,yobs)
+    yobs = y[fold_ind == fold]
+    cv_errors[fold] = (1-conf_matrix$overall[1])
+    }
+    
+    if(model == "log_reg_lasso"){
+      tmp_fit = glmnet(X1[fold_ind!=fold,],y[fold_ind!=fold],
+                       family = "binomial",
+                       alpha = 1, standardize = FALSE,
+                       lambda = lambda_lasso_min)
+      phat = predict(tmp_fit,X1[fold_ind == fold,],
+                     s = lambda_lasso_min, type = "response")
+      yhat = ifelse(phat > 0.5, 1, 0)
+      yhat = factor(yhat, levels= c(0,1))
+      yobs = y[fold_ind == fold]
+      yobs = factor(yobs, levels= c(0,1))
+      conf_matrix = confusionMatrix(yhat,yobs)
+      cv_errors[fold] = (1 - conf_matrix$overall[1])
+    }
+    
+    if(model == "log_reg_qda"){
+      tmp_fit = qda(y ~ ., data = Xy[fold_ind!=fold,])
+      qda_test = predict(tmp_fit, Xy[fold_ind == fold,])
+      yhat = qda_test$class
+      yhat = factor(yhat, levels= c(0,1))
+      yobs = y[fold_ind == fold]
+      yobs = factor(yobs, levels= c(0,1))
+      conf_matrix = confusionMatrix(yhat,yobs)
+      yobs = y[fold_ind == fold]
+      cv_errors[fold] = (1-conf_matrix$overall[1])
+    }
+
+    # tmp_fit = lm(y ~ ., data = Xy[fold_ind!=fold,])
+    # yhat = predict(tmp_fit,Xy[fold_ind == fold,])
+    # yobs = y[fold_ind == fold]
+    # cv_errors[fold] = mean((yobs - yhat)^2)
+  }
+  
+  fold_sizes = numeric(nfolds)
+  for(fold in 1:nfolds) fold_sizes[fold] = length(which(fold_ind == fold))
+  test_error = weighted.mean(cv_errors, w = fold_sizes)
+  return(test_error)
+}
+
+
+```
+
+
+
+```{r, echo=FALSE}
+test_error_pca = log_reg_cv(BreastCancer_transformed[,-4],
+                            BreastCancer_transformed[,4],
+                            fold_index, model = "log_reg_pca")
+
+
+
+# test_error_bestsubset = log_reg_cv(BreastCancer_red[,-6],
+#                                    BreastCancer_red[,6],
+#                                    fold_index, model = "log_reg_bestsubset")
+
+test_error_bestsubset = log_reg_cv(BreastCancer_red[,-6],
+                                   BreastCancer_red[,6],
+                                   fold_index, model = "log_reg_bestsubset")
+
+test_error_lasso = log_reg_cv(as.matrix(BreastCancer_df_scaled[,-10]),
+                              as.matrix(BreastCancer_df_scaled[,10]),
+                              fold_index, model = "log_reg_lasso")
+
+test_error_qda = log_reg_cv(BreastCancer_red[,-6],
+                            BreastCancer_red[,6],
+                            fold_index, model = "log_reg_qda")
+
+
+cat("\n Logistic Regression using PCA : ",test_error_pca)
+
+cat("\n Logistic Regression using Best Subset Selection : ",test_error_bestsubset)
+
+cat("\n Logistic Regression using LASSO : ",test_error_lasso)
+
+cat("\n Classification using QDA: ",test_error_qda)
+# test_error_pca
+# test_error_bestsubset
+# test_error_lasso
+# test_error_qda
+```
+
+As per the test errors shown above, Logistic Regression with LASSO penalty has the smallest test error and thus would be the best choice for predicting whether a tissue sample is Benign or Malignant based on the cytological characteristics. Even though LASSO penalty did not reduce the coefficients to 0, it still performed better than all the other models by adding significant penalties on the coefficients of less important variables, thus shrinking their values to near 0. The LASSO model seems to generalize well and not overfit the data by removing variables, instead it has reduced the values of the coefficients of low impacting variables. Quadratic Discriminant Analysis has the largest average test error and performed the worst. One reason why QDA performed worst could be outliers. QDA is quite sensitive to outliers and as explored previously, our data set did contain a lot of outliers.
+
+
+
+# Conclusion
+
+We have successfully explored the data and implemented various classification algorithms. We started by implementing PCA and best subset selection techniques to try and reduce the number of predictor variables. We also tried to add regularization to the Logistic Regression by adding LASSO penalty, however it did not result in removal of any predictor variables, just shrinkage of less important coefficients. Finally, we implemented QDA with best subset selection technique. To assess the performance of all these models, we tried cross validation based on test errors. Logistic Regression with LASSO penalty has the smallest test error, and a close second is Logistic Regression using PCA. We concluded that Logistic Regression with LASSO penalty is the best classifier, even though it has all the predictor variables.
+
+
